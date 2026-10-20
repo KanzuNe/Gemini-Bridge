@@ -858,51 +858,49 @@ app.post("/v1/chat/completions", async (req, res, next) => {
 
           if (toolResult.decision.type === "tool_calls") {
             completeConversationFromToolResult(conversationLog, context, toolResult);
-            const toolCall = toolResult.decision.toolCalls[0];
-            if (!toolCall) {
+            if (toolResult.decision.toolCalls.length === 0) {
               throw new InvalidRequestError("Tool planner returned no tool calls.", "empty_tool_calls");
             }
-            writeSse(
-              `data: ${JSON.stringify(
-                buildChatCompletionChunk({
-                  responseId: context.responseId,
-                  modelName: context.modelName,
-                  delta: {
-                    tool_calls: [
-                      {
-                        index: 0,
-                        id: toolCall.id,
-                        type: "function",
-                        function: {
-                          name: toolCall.function.name,
-                          arguments: "",
+            // Stream natural language reasoning/explanation before tool calls if available
+            if (toolResult.decision.content?.trim()) {
+              writeSse(
+                `data: ${JSON.stringify(
+                  buildChatCompletionChunk({
+                    responseId: context.responseId,
+                    modelName: context.modelName,
+                    delta: { content: toolResult.decision.content },
+                    created: context.created,
+                  }),
+                )}\n\n`,
+              );
+            }
+
+            // Stream all tool calls with corresponding indexes
+            for (let i = 0; i < toolResult.decision.toolCalls.length; i++) {
+              const toolCall = toolResult.decision.toolCalls[i];
+              writeSse(
+                `data: ${JSON.stringify(
+                  buildChatCompletionChunk({
+                    responseId: context.responseId,
+                    modelName: context.modelName,
+                    delta: {
+                      tool_calls: [
+                        {
+                          index: i,
+                          id: toolCall.id,
+                          type: "function",
+                          function: {
+                            name: toolCall.function.name,
+                            arguments: toolCall.function.arguments,
+                          },
                         },
-                      },
-                    ],
-                  },
-                  created: context.created,
-                }),
-              )}\n\n`,
-            );
-            writeSse(
-              `data: ${JSON.stringify(
-                buildChatCompletionChunk({
-                  responseId: context.responseId,
-                  modelName: context.modelName,
-                  delta: {
-                    tool_calls: [
-                      {
-                        index: 0,
-                        function: {
-                          arguments: toolCall.function.arguments,
-                        },
-                      },
-                    ],
-                  },
-                  created: context.created,
-                }),
-              )}\n\n`,
-            );
+                      ],
+                    },
+                    created: context.created,
+                  }),
+                )}\n\n`,
+              );
+            }
             writeSse(
               `data: ${JSON.stringify(
                 buildChatCompletionChunk({
@@ -1044,6 +1042,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
             responseId: context.responseId,
             modelName: context.modelName,
             toolCalls: toolResult.decision.toolCalls,
+            content: toolResult.decision.content,
             promptText: context.promptText,
             created: context.created,
           });
@@ -1149,10 +1148,10 @@ app.post("/v1/responses", async (req, res, next) => {
 
           if (toolResult.decision.type === "tool_calls") {
             completeConversationFromToolResult(conversationLog, context, toolResult);
-            const toolCall = toolResult.decision.toolCalls[0];
-            if (!toolCall) {
+            if (toolResult.decision.toolCalls.length === 0) {
               throw new InvalidRequestError("Tool planner returned no tool calls.", "empty_tool_calls");
             }
+            const toolCall = toolResult.decision.toolCalls[0];
             const responseCall = toResponseFunctionCall(toolCall);
             const item = {
               id: responseCall.id,

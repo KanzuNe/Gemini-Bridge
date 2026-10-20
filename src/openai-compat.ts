@@ -642,6 +642,7 @@ export function buildChatCompletionToolCallPayload(params: {
     };
   }>;
   promptText: string;
+  content?: string | null;
   created?: number;
 }) {
   const created = params.created ?? Math.floor(Date.now() / 1000);
@@ -658,7 +659,7 @@ export function buildChatCompletionToolCallPayload(params: {
         index: 0,
         message: {
           role: "assistant",
-          content: null,
+          content: params.content ?? null,
           tool_calls: params.toolCalls,
         },
         finish_reason: "tool_calls",

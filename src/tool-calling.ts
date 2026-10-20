@@ -23,17 +23,18 @@ export type ParsedToolDecision =
       type: "message";
       content: string;
     }
-	  | {
-	      type: "tool_calls";
-	      toolCalls: Array<{
-	        id: string;
-	        type: "function";
-	        function: {
-	          name: string;
-	          arguments: string;
-	        };
-	      }>;
-	    };
+  | {
+      type: "tool_calls";
+      content?: string;
+      toolCalls: Array<{
+        id: string;
+        type: "function";
+        function: {
+          name: string;
+          arguments: string;
+        };
+      }>;
+    };
 
 export type OpenAiToolCall = Extract<ParsedToolDecision, { type: "tool_calls" }>["toolCalls"][number];
 
@@ -122,27 +123,59 @@ export function buildToolPlanningPrompt(params: {
     description: tool.function.description ?? "",
     parameters: tool.function.parameters ?? { type: "object", properties: {} },
   }));
+
   const choiceInstruction = forcedToolName
-    ? `You must call exactly this tool: ${forcedToolName}.`
+    ? `You must call the tool "${forcedToolName}".`
     : params.toolChoice === "required"
-      ? "You must call one of the available tools."
-      : "Call a tool when it is needed to satisfy the latest user request. Otherwise answer normally.";
+      ? "You must call one or more of the available tools."
+      : "If external tools are needed to satisfy the user request, call them. Otherwise, answer the user directly.";
 
   return [
-    "You are planning a response for an OpenAI-compatible client that supports function tools.",
-    "Decide whether to answer directly or call exactly one tool.",
+    "You are an assistant with access to the following external tools:",
     choiceInstruction,
-    "Return only one valid JSON object. Do not wrap it in markdown.",
-    "For a direct answer, use this shape:",
-    "{\"type\":\"message\",\"content\":\"answer text\"}",
-    "For a tool call, use this shape:",
-    "{\"type\":\"tool_call\",\"name\":\"tool_name\",\"arguments\":{}}",
-    "The arguments object must match the selected tool schema as closely as possible.",
-    "Available tools:",
+    "",
+    "# How to Call Tools:",
+    "When you need to execute tools, wrap each tool call inside <tool_call> XML tags like this:",
+    "<tool_call>",
+    "{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}",
+    "</tool_call>",
+    "",
+    "Rules:",
+    "1. You may provide natural language reasoning or explanations before, between, or after tool calls.",
+    "2. You can call MULTIPLE tools in parallel by outputting multiple <tool_call>...</tool_call> blocks.",
+    "3. The content inside <tool_call> must be a valid JSON object with \"name\" (string) and \"arguments\" (object).",
+    "4. If no tools are required, answer directly in normal natural language or markdown without any <tool_call> tags.",
+    "",
+    "# Available Tools:",
     JSON.stringify(toolSpecs, null, 2),
-    "Conversation prompt:",
+    "",
+    "# User Request & Context:",
     params.promptText,
   ].join("\n");
+}
+
+function cleanJsonString(raw: string): string {
+  let cleaned = raw.trim();
+  if (cleaned.startsWith("```json")) {
+    cleaned = cleaned.slice(7);
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.slice(3);
+  }
+  if (cleaned.endsWith("```")) {
+    cleaned = cleaned.slice(0, -3);
+  }
+  return cleaned.trim();
+}
+
+function safeParseJson(raw: unknown): unknown {
+  if (typeof raw !== "string") {
+    return isRecord(raw) ? raw : {};
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
 }
 
 function extractJsonObject(text: string): string | null {
@@ -168,56 +201,134 @@ function extractJsonObject(text: string): string | null {
 }
 
 export function parseToolDecision(text: string, tools: ChatToolDefinition[]): ParsedToolDecision {
-  const jsonText = extractJsonObject(text);
-  if (!jsonText) {
-    return { type: "message", content: text };
+  const validToolNames = new Set(tools.map((t) => t.function.name));
+  const toolCalls: OpenAiToolCall[] = [];
+
+  // 1. Try extracting <tool_call>...</tool_call> tags
+  const toolCallRegex = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
+  let match: RegExpExecArray | null;
+  let hasXmlMatch = false;
+
+  while ((match = toolCallRegex.exec(text)) !== null) {
+    hasXmlMatch = true;
+    const rawInner = match[1]?.trim() ?? "";
+    const cleaned = cleanJsonString(rawInner);
+    try {
+      const parsed = JSON.parse(cleaned);
+      if (isRecord(parsed)) {
+        const name = normalizeToolName(parsed.name || (parsed.function as Record<string, unknown> | undefined)?.name);
+        if (validToolNames.has(name)) {
+          const rawArgs = parsed.arguments ?? parsed.parameters ?? {};
+          const args = isRecord(rawArgs)
+            ? rawArgs
+            : typeof rawArgs === "string"
+              ? safeParseJson(rawArgs)
+              : {};
+          toolCalls.push({
+            id: `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`,
+            type: "function",
+            function: {
+              name,
+              arguments: JSON.stringify(args),
+            },
+          });
+        }
+      }
+    } catch {
+      // ignore malformed inner block
+    }
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonText);
-  } catch {
-    return { type: "message", content: text };
-  }
-  if (!isRecord(parsed)) {
-    return { type: "message", content: text };
-  }
-
-  if (parsed.type === "message") {
+  if (hasXmlMatch && toolCalls.length > 0) {
+    const remainingText = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "").trim();
     return {
-      type: "message",
-      content: typeof parsed.content === "string" ? parsed.content : text,
+      type: "tool_calls",
+      content: remainingText,
+      toolCalls,
     };
   }
 
-  if (parsed.type !== "tool_call") {
-    return { type: "message", content: text };
+  // 2. Fallback: Check if the whole text or a markdown block is a JSON tool call
+  const jsonText = extractJsonObject(text);
+  if (jsonText) {
+    try {
+      const parsed = JSON.parse(jsonText);
+      if (isRecord(parsed)) {
+        if (parsed.type === "message") {
+          return {
+            type: "message",
+            content: typeof parsed.content === "string" ? parsed.content : text,
+          };
+        }
+
+        // Multiple tool calls in { "tool_calls": [...] }
+        if (Array.isArray(parsed.tool_calls)) {
+          for (const item of parsed.tool_calls) {
+            if (isRecord(item)) {
+              const name = normalizeToolName(item.name || (item.function as Record<string, unknown> | undefined)?.name);
+              if (validToolNames.has(name)) {
+                const rawArgs = item.arguments ?? item.parameters ?? {};
+                const args = isRecord(rawArgs)
+                  ? rawArgs
+                  : typeof rawArgs === "string"
+                    ? safeParseJson(rawArgs)
+                    : {};
+                toolCalls.push({
+                  id: `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`,
+                  type: "function",
+                  function: {
+                    name,
+                    arguments: JSON.stringify(args),
+                  },
+                });
+              }
+            }
+          }
+          if (toolCalls.length > 0) {
+            return {
+              type: "tool_calls",
+              toolCalls,
+            };
+          }
+        }
+
+        // Single tool call: { "type": "tool_call", "name": "...", "arguments": ... }
+        // or direct tool call: { "name": "...", "arguments": ... }
+        const name = normalizeToolName(parsed.name || (parsed.function as Record<string, unknown> | undefined)?.name);
+        if (validToolNames.has(name)) {
+          const rawArgs = parsed.arguments ?? parsed.parameters ?? {};
+          const args = isRecord(rawArgs)
+            ? rawArgs
+            : typeof rawArgs === "string"
+              ? safeParseJson(rawArgs)
+              : {};
+          return {
+            type: "tool_calls",
+            toolCalls: [
+              {
+                id: `call_${randomUUID().replace(/-/g, "").slice(0, 24)}`,
+                type: "function",
+                function: {
+                  name,
+                  arguments: JSON.stringify(args),
+                },
+              },
+            ],
+          };
+        }
+      }
+    } catch {
+      // fallback to message
+    }
   }
 
-  const name = normalizeToolName(parsed.name);
-  if (!tools.some((tool) => tool.function.name === name)) {
-    return { type: "message", content: text };
-  }
-
-  const args = isRecord(parsed.arguments) ? parsed.arguments : {};
-  return {
-    type: "tool_calls",
-    toolCalls: [
-      {
-        id: `call_${randomUUID().replace(/-/g, "")}`,
-        type: "function",
-        function: {
-          name,
-          arguments: JSON.stringify(args),
-        },
-      },
-    ],
-  };
+  // 3. Fallback: Default to message
+  return { type: "message", content: text };
 }
 
 export function toResponseFunctionCall(toolCall: OpenAiToolCall): ResponseFunctionCall {
   return {
-    id: `fc_${randomUUID().replace(/-/g, "")}`,
+    id: `fc_${randomUUID().replace(/-/g, "").slice(0, 24)}`,
     callId: toolCall.id,
     name: toolCall.function.name,
     argumentsText: toolCall.function.arguments,
