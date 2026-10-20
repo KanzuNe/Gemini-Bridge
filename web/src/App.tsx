@@ -17,6 +17,8 @@ import {
 } from 'lucide-react'
 import './App.css'
 import { copyText } from './clipboard'
+import { useI18n, LanguageToggle, type Language } from './i18n'
+import type { TranslationDictionary } from './i18n/en'
 
 type CookieInspection = {
   status: 'missing' | 'valid' | 'expiring' | 'expired'
@@ -107,7 +109,7 @@ type CookiesResponse = {
   raw: string
 }
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(url: string, init?: RequestInit, t?: TranslationDictionary): Promise<T> {
   const response = await fetch(url, {
     headers: {
       'Content-Type': 'application/json',
@@ -118,16 +120,16 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { error?: { message?: string } }
-    throw new Error(data.error?.message ?? `请求失败：${response.status}`)
+    throw new Error(data.error?.message ?? `${t?.requestFailed ?? 'Request failed: '}${response.status}`)
   }
 
   return (await response.json()) as T
 }
 
-function formatDate(value: string | null): string {
-  if (!value) return '暂无记录'
+function formatDate(value: string | null, lang: Language, emptyText: string): string {
+  if (!value) return emptyText
 
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(lang === 'zh' ? 'zh-CN' : 'en-US', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -138,15 +140,15 @@ function formatDate(value: string | null): string {
   }).format(new Date(value))
 }
 
-function formatDuration(ms: number): string {
+function formatDuration(ms: number, t: TranslationDictionary): string {
   const seconds = Math.floor(ms / 1000)
-  if (seconds < 60) return `${seconds} 秒`
+  if (seconds < 60) return `${seconds} ${t.sec}`
 
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`
+  if (minutes < 60) return `${minutes} ${t.min} ${seconds % 60} ${t.sec}`
 
   const hours = Math.floor(minutes / 60)
-  return `${hours} 小时 ${minutes % 60} 分`
+  return `${hours} ${t.hour} ${minutes % 60} ${t.min}`
 }
 
 function formatBytes(bytes: number): string {
@@ -160,23 +162,23 @@ function formatPercent(value: number): string {
   return `${value.toFixed(1)}%`
 }
 
-function formatRate(value: number): string {
-  return `${value.toFixed(2)}/分`
+function formatRate(value: number, perMinuteText: string): string {
+  return `${value.toFixed(2)}${perMinuteText}`
 }
 
-function cookieStatusLabel(status: CookieInspection['status'] | undefined) {
-  if (!status) return '待检查'
-  if (status === 'valid') return '正常'
-  if (status === 'expiring') return '即将过期'
-  if (status === 'expired') return '已过期'
-  return '缺失'
+function cookieStatusLabel(status: CookieInspection['status'] | undefined, t: TranslationDictionary) {
+  if (!status) return t.statusPending
+  if (status === 'valid') return t.statusHealthy
+  if (status === 'expiring') return t.statusExpiring
+  if (status === 'expired') return t.statusExpired
+  return t.statusMissing
 }
 
-function logLevelLabel(level: LogEntry['level']) {
-  if (level === 'info') return '信息'
-  if (level === 'warn') return '警告'
-  if (level === 'error') return '错误'
-  return '调试'
+function logLevelLabel(level: LogEntry['level'], t: TranslationDictionary) {
+  if (level === 'info') return t.logInfo
+  if (level === 'warn') return t.logWarn
+  if (level === 'error') return t.logError
+  return t.logDebug
 }
 
 function mergeLogs(current: LogEntry[], incoming: LogEntry[]) {
@@ -195,6 +197,8 @@ function buildApiBase(url: string): string {
 }
 
 export default function App() {
+  const { t, lang } = useI18n()
+
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [models, setModels] = useState<string[]>([])
   const [defaultModel, setDefaultModel] = useState('')
@@ -222,11 +226,11 @@ export default function App() {
       ? (lifetimeTraffic.successCount / lifetimeTraffic.requests) * 100
       : 0
   const isBusy = busyAction !== null
-  const serviceLabel = status?.service === 'running' ? '运行中' : '已停止'
-  const cookieLabel = cookieStatusLabel(status?.cookieInspection.status)
+  const serviceLabel = status?.service === 'running' ? t.running : t.stopped
+  const cookieLabel = cookieStatusLabel(status?.cookieInspection.status, t)
   const missingCookies = status?.cookieInspection.requiredMissing.length
-    ? status.cookieInspection.requiredMissing.join('、')
-    : '无'
+    ? status.cookieInspection.requiredMissing.join(', ')
+    : t.none
 
   const clearReconnectTimer = () => {
     if (reconnectTimer.current !== null) {
@@ -237,7 +241,7 @@ export default function App() {
 
   const loadStatus = useCallback(
     async (syncProxy = false) => {
-      const next = await requestJson<StatusResponse>('/admin/status')
+      const next = await requestJson<StatusResponse>('/admin/status', undefined, t)
       setStatus(next)
 
       if (syncProxy || !proxyDirty) {
@@ -252,35 +256,35 @@ export default function App() {
         setDefaultModel(next.defaultModel)
       }
     },
-    [anchorDirty, modelDirty, proxyDirty],
+    [anchorDirty, modelDirty, proxyDirty, t],
   )
 
   const loadModels = useCallback(
     async (forceSync = false) => {
-      const next = await requestJson<ModelsResponse>('/admin/models')
+      const next = await requestJson<ModelsResponse>('/admin/models', undefined, t)
       setModels(next.models)
 
       if (forceSync || !modelDirty) {
         setDefaultModel(next.defaultModel)
       }
     },
-    [modelDirty],
+    [modelDirty, t],
   )
 
   const loadCookies = useCallback(
     async (forceSync = false) => {
-      const next = await requestJson<CookiesResponse>('/admin/cookies')
+      const next = await requestJson<CookiesResponse>('/admin/cookies', undefined, t)
       if (forceSync || !cookieDirty) {
         setCookieText(next.raw)
       }
     },
-    [cookieDirty],
+    [cookieDirty, t],
   )
 
   const loadLogs = useCallback(async () => {
-    const next = await requestJson<{ logs: LogEntry[] }>('/admin/logs?lines=200')
+    const next = await requestJson<{ logs: LogEntry[] }>('/admin/logs?lines=200', undefined, t)
     setLogs((current) => mergeLogs(current, next.logs))
-  }, [])
+  }, [t])
 
   const loadInitialData = useCallback(async () => {
     await Promise.all([loadStatus(true), loadModels(true), loadCookies(true), loadLogs()])
@@ -291,6 +295,7 @@ export default function App() {
   }, [loadLogs, loadStatus])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadInitialData().catch((error: Error) => {
       setBanner({ tone: 'error', text: error.message })
     })
@@ -351,7 +356,7 @@ export default function App() {
     } catch (error) {
       setBanner({
         tone: 'error',
-        text: error instanceof Error ? error.message : fallbackError ?? '操作失败',
+        text: error instanceof Error ? error.message : fallbackError ?? t.failed,
       })
     } finally {
       setBusyAction(null)
@@ -360,74 +365,74 @@ export default function App() {
 
   const saveCookies = async () => {
     await runAction(
-      'Cookie 已保存',
+      t.cookiesSaved,
       async () => {
         const next = await requestJson<CookiesResponse>('/admin/cookies', {
           method: 'POST',
           body: JSON.stringify({ raw: cookieText }),
-        })
+        }, t)
         setCookieText(next.raw)
         setCookieDirty(false)
         await loadStatus(true)
       },
-      '保存 Cookie 失败',
+      t.saveCookiesFailed,
     )
   }
 
   const saveDefaultModel = async () => {
     if (!defaultModel) {
-      setBanner({ tone: 'error', text: '请先选择默认模型' })
+      setBanner({ tone: 'error', text: t.selectModelFirst })
       return
     }
 
     await runAction(
-      '默认模型已保存',
+      t.modelSaved,
       async () => {
         const next = await requestJson<{ defaultModel: string }>('/admin/models', {
           method: 'POST',
           body: JSON.stringify({ defaultModel }),
-        })
+        }, t)
         setDefaultModel(next.defaultModel)
         setModelDirty(false)
         await Promise.all([loadStatus(), loadModels(true)])
       },
-      '保存默认模型失败',
+      t.saveModelFailed,
     )
   }
 
   const saveProxy = async () => {
     await runAction(
-      '代理已保存',
+      t.proxySaved,
       async () => {
         await requestJson('/admin/proxy', {
           method: 'POST',
           body: JSON.stringify({ proxy: proxyInput.trim() || null }),
-        })
+        }, t)
         setProxyDirty(false)
         await loadStatus(true)
       },
-      '保存代理失败',
+      t.saveProxyFailed,
     )
   }
 
   const saveAnchor = async () => {
     await runAction(
-      '来源会话已保存',
+      t.anchorSaved,
       async () => {
         await requestJson('/admin/anchor', {
           method: 'POST',
           body: JSON.stringify({ url: anchorInput.trim() || null }),
-        })
+        }, t)
         setAnchorDirty(false)
         await loadStatus()
       },
-      '保存来源会话失败',
+      t.saveAnchorFailed,
     )
   }
 
   const controlService = async (action: 'start' | 'stop' | 'restart') => {
     const successText =
-      action === 'start' ? '服务已启动' : action === 'stop' ? '服务已停止' : '服务已重启'
+      action === 'start' ? t.serviceStarted : action === 'stop' ? t.serviceStopped : t.serviceRestarted
 
     await runAction(
       successText,
@@ -435,10 +440,10 @@ export default function App() {
         await requestJson('/admin/service', {
           method: 'POST',
           body: JSON.stringify({ action }),
-        })
+        }, t)
         await refreshDashboard()
       },
-      '服务操作失败',
+      t.serviceActionFailed,
     )
   }
 
@@ -446,25 +451,32 @@ export default function App() {
     try {
       const copied = await copyText(copyableApiBase)
       if (!copied) {
-        throw new Error('复制失败')
+        throw new Error(t.copyFailed)
       }
-      setBanner({ tone: 'info', text: lanApiBases.length > 0 ? '局域网接口地址已复制' : '接口地址已复制' })
+      setBanner({ tone: 'info', text: lanApiBases.length > 0 ? t.lanEndpointCopied : t.endpointCopied })
     } catch {
-      setBanner({ tone: 'error', text: '复制失败，请手动复制接口地址。' })
+      setBanner({ tone: 'error', text: t.copyFailed })
     }
   }
 
   const handleTest = async () => {
-    setBusyAction('测试中…')
+    setBusyAction(t.testing)
     setBanner(null)
 
     try {
-      const result = await requestJson<{ ok: boolean; model: string; latencyMs: number; content: string }>('/admin/test', { method: 'POST' })
-      setBanner({ tone: 'success', text: `测试通过 — ${result.model}，延迟 ${result.latencyMs}ms，响应：${result.content}` })
+      const result = await requestJson<{ ok: boolean; model: string; latencyMs: number; content: string }>(
+        '/admin/test',
+        { method: 'POST' },
+        t,
+      )
+      setBanner({
+        tone: 'success',
+        text: t.testPassed(result.model, result.latencyMs, result.content),
+      })
     } catch (error) {
       setBanner({
         tone: 'error',
-        text: error instanceof Error ? error.message : '连接测试失败，请检查 Cookie 和代理设置',
+        text: error instanceof Error ? error.message : t.testFailed,
       })
     } finally {
       setBusyAction(null)
@@ -472,50 +484,52 @@ export default function App() {
   }
 
   const handleClearHistory = async () => {
-    if (!window.confirm('确认清除所有历史请求数据和流量统计？此操作不可恢复。')) return
+    if (!window.confirm(t.clearHistoryConfirm)) return
 
     await runAction(
-      '历史数据已清除',
+      t.historyCleared,
       async () => {
-        await requestJson('/admin/data/reset', { method: 'POST' })
+        await requestJson('/admin/data/reset', { method: 'POST' }, t)
         await refreshDashboard()
       },
-      '清除历史数据失败',
+      t.clearHistoryFailed,
     )
   }
 
   return (
     <>
       <a className="skip-link" href="#main-content">
-        跳到主要内容
+        {t.skipToMain}
       </a>
 
       <main className="page-shell app-shell" id="main-content">
         <header className="page-header">
           <div className="header-copy">
-            <div className="eyebrow">普通用户版</div>
-            <h1>Gemini Bridge</h1>
-            <p>先保存 Cookie，选择默认模型，再点击启动。常用操作都放在第一页，其他设置可以先不用管。</p>
+            <div className="eyebrow">{t.eyebrow}</div>
+            <h1>{t.appTitle}</h1>
+            <p>{t.appSubtitle}</p>
           </div>
 
           <div className="header-actions">
+            <LanguageToggle />
+
             <button className="primary-button" disabled={isBusy} onClick={() => void handleTest()} type="button">
               <Zap size={16} />
-              测试连接
+              {t.testConnection}
             </button>
 
             <button className="soft-button" onClick={() => void loadInitialData()} type="button">
               <RefreshCw size={16} />
-              刷新
+              {t.refresh}
             </button>
 
             <button className="soft-button" onClick={() => void copyEndpoint()} type="button">
               <Copy size={16} />
-              复制接口
+              {t.copyEndpoint}
             </button>
 
             <Link className="soft-link" to="/logs">
-              会话记录
+              {t.conversationLogs}
             </Link>
           </div>
         </header>
@@ -532,21 +546,23 @@ export default function App() {
 
         <section className="summary-strip">
           <div className="summary-item">
-            <span className="summary-label">服务状态</span>
+            <span className="summary-label">{t.serviceStatus}</span>
             <strong>{serviceLabel}</strong>
-            <span className="summary-text">{status ? formatDuration(status.uptimeMs) : '正在加载'}</span>
+            <span className="summary-text">{status ? formatDuration(status.uptimeMs, t) : t.loadingStatus}</span>
           </div>
           <div className="summary-item">
-            <span className="summary-label">Cookie 状态</span>
+            <span className="summary-label">{t.cookieStatus}</span>
             <strong>{cookieLabel}</strong>
-            <span className="summary-text">{missingCookies === '无' ? '关键项齐全' : `缺少：${missingCookies}`}</span>
+            <span className="summary-text">
+              {missingCookies === t.none ? t.allRequiredPresent : `${t.missingCookiesPrefix}${missingCookies}`}
+            </span>
           </div>
           <div className="summary-item summary-item-wide">
-            <span className="summary-label">接口地址</span>
+            <span className="summary-label">{t.apiEndpoint}</span>
             <strong>/v1</strong>
-            <span className="summary-text">本机：{localApiBase}</span>
+            <span className="summary-text">{t.localPrefix}{localApiBase}</span>
             <span className="summary-text">
-              {lanApiBases.length > 0 ? `局域网：${lanApiBases.join(' / ')}` : '局域网：当前仅本机可访问'}
+              {lanApiBases.length > 0 ? `${t.lanPrefix}${lanApiBases.join(' / ')}` : t.lanLocalOnly}
             </span>
           </div>
         </section>
@@ -556,14 +572,14 @@ export default function App() {
             <div className="panel-head">
               <div className="panel-title">
                 <Server size={18} />
-                <h2>服务控制</h2>
+                <h2>{t.serviceControl}</h2>
               </div>
               <span className="status-pill">{serviceLabel}</span>
             </div>
 
             <div className="field-group">
               <label className="field-label" htmlFor="default-model">
-                默认模型
+                {t.defaultModel}
               </label>
               <div className="inline-form">
                 <select
@@ -576,7 +592,7 @@ export default function App() {
                   value={defaultModel}
                 >
                   <option disabled value="">
-                    {models.length === 0 ? '正在加载模型列表' : '请选择默认模型'}
+                    {models.length === 0 ? t.loadingModels : t.selectDefaultModel}
                   </option>
                   {models.map((model) => (
                     <option key={model} value={model}>
@@ -592,19 +608,19 @@ export default function App() {
                   type="button"
                 >
                   <Save size={16} />
-                  保存模型
+                  {t.saveModel}
                 </button>
               </div>
-              <p className="field-help">新请求会默认使用这里选择的模型。服务运行中保存后会自动重新连接。</p>
+              <p className="field-help">{t.modelHelp}</p>
             </div>
 
             <div className="mini-list">
               <div>
-                <span>最近请求</span>
-                <strong>{formatDate(status?.lastRequestAt ?? null)}</strong>
+                <span>{t.lastRequest}</span>
+                <strong>{formatDate(status?.lastRequestAt ?? null, lang, t.noRecord)}</strong>
               </div>
               <div>
-                <span>请求 / 错误</span>
+                <span>{t.requestsAndErrors}</span>
                 <strong>
                   {status?.requestCount ?? 0} / {status?.errorCount ?? 0}
                 </strong>
@@ -614,20 +630,20 @@ export default function App() {
             <div className="action-row">
               <button className="primary-button" disabled={isBusy} onClick={() => void controlService('start')} type="button">
                 <PlayCircle size={16} />
-                启动
+                {t.start}
               </button>
               <button className="soft-button" disabled={isBusy} onClick={() => void controlService('restart')} type="button">
                 <RefreshCw size={16} />
-                重启
+                {t.restart}
               </button>
               <button className="soft-button" disabled={isBusy} onClick={() => void controlService('stop')} type="button">
                 <Square size={16} />
-                停止
+                {t.stop}
               </button>
             </div>
 
             {status?.lastInitError ? (
-              <div className="error-box">启动失败时，请先检查 Cookie 和代理。当前错误：{status.lastInitError}</div>
+              <div className="error-box">{t.initErrorPrefix}{status.lastInitError}</div>
             ) : null}
           </article>
 
@@ -635,65 +651,66 @@ export default function App() {
             <div className="panel-head">
               <div className="panel-title">
                 <Activity size={18} />
-                <h2>流量统计</h2>
+                <h2>{t.trafficAnalytics}</h2>
               </div>
-              <span className="status-pill">{traffic ? `${traffic.inFlight} 个进行中` : '统计加载中'}</span>
+              <span className="status-pill">{traffic ? t.inFlightBadge(traffic.inFlight) : t.statsLoading}</span>
             </div>
 
             <div className="mini-list traffic-grid">
               <div>
-                <span>累计请求</span>
+                <span>{t.totalRequests}</span>
                 <strong>{lifetimeTraffic?.requests ?? 0}</strong>
-                <span>最近请求：{formatDate(lifetimeTraffic?.lastRequestAt ?? null)}</span>
+                <span>{t.recentRequestPrefix}{formatDate(lifetimeTraffic?.lastRequestAt ?? null, lang, t.noRecord)}</span>
               </div>
               <div>
-                <span>成功率 / 平均耗时</span>
+                <span>{t.successRateLatency}</span>
                 <strong>{formatPercent(successRate)}</strong>
                 <span>{lifetimeTraffic?.averageLatencyMs ?? 0} ms</span>
               </div>
               <div>
-                <span>累计流量</span>
+                <span>{t.totalDataTransfer}</span>
                 <strong>{formatBytes(lifetimeTraffic?.totalBytes ?? 0)}</strong>
                 <span>
-                  上行 {formatBytes(lifetimeTraffic?.requestBytes ?? 0)} / 下行{' '}
-                  {formatBytes(lifetimeTraffic?.responseBytes ?? 0)}
+                  {t.inboundOutbound(
+                    formatBytes(lifetimeTraffic?.requestBytes ?? 0),
+                    formatBytes(lifetimeTraffic?.responseBytes ?? 0),
+                  )}
                 </span>
               </div>
               <div>
-                <span>最近 {traffic?.recentWindowMinutes ?? 5} 分钟</span>
-                <strong>{recentTraffic?.requests ?? 0} 次</strong>
+                <span>{t.recentWindowMinutes(traffic?.recentWindowMinutes ?? 5)}</span>
+                <strong>{recentTraffic?.requests ?? 0} {t.timesSuffix}</strong>
                 <span>
-                  {formatRate(recentTraffic?.requestsPerMinute ?? 0)} ｜ {formatBytes(recentTraffic?.totalBytes ?? 0)}
+                  {formatRate(recentTraffic?.requestsPerMinute ?? 0, t.perMinute)} ｜ {formatBytes(recentTraffic?.totalBytes ?? 0)}
                 </span>
               </div>
             </div>
 
             <div className="mini-list traffic-grid">
               <div>
-                <span>Prompt Tokens</span>
+                <span>{t.promptTokens}</span>
                 <strong>{lifetimeTraffic?.promptTokens ?? 0}</strong>
-                <span>Completion Tokens：{lifetimeTraffic?.completionTokens ?? 0}</span>
+                <span>{t.completionTokensPrefix}{lifetimeTraffic?.completionTokens ?? 0}</span>
               </div>
               <div>
-                <span>流式请求</span>
+                <span>{t.streamRequests}</span>
                 <strong>{lifetimeTraffic?.streamCount ?? 0}</strong>
-                <span>错误请求：{lifetimeTraffic?.errorCount ?? 0}</span>
+                <span>{t.errorRequestsPrefix}{lifetimeTraffic?.errorCount ?? 0}</span>
               </div>
               <div>
-                <span>吞吐速率</span>
-                <strong>{formatRate(lifetimeTraffic?.requestsPerMinute ?? 0)}</strong>
-                <span>{formatBytes(lifetimeTraffic?.bytesPerMinute ?? 0)}/分</span>
+                <span>{t.throughput}</span>
+                <strong>{formatRate(lifetimeTraffic?.requestsPerMinute ?? 0, t.perMinute)}</strong>
+                <span>{formatBytes(lifetimeTraffic?.bytesPerMinute ?? 0)}{t.perMinute}</span>
               </div>
               <div>
-                <span>统计起点</span>
-                <strong>{formatDate(traffic?.startedAt ?? null)}</strong>
-                {/* <span>统计已持久化，重启后继续累计</span> */}
+                <span>{t.trackingStarted}</span>
+                <strong>{formatDate(traffic?.startedAt ?? null, lang, t.noRecord)}</strong>
               </div>
             </div>
 
             <div className="field-group">
               <div className="panel-title">
-                <h3>模型分布</h3>
+                <h3>{t.modelDistribution}</h3>
               </div>
               {traffic && traffic.topModels.length > 0 ? (
                 <div className="traffic-model-list">
@@ -705,11 +722,11 @@ export default function App() {
                       <div className="traffic-model-row" key={model.model}>
                         <div>
                           <strong>{model.model}</strong>
-                          <span>最近请求：{formatDate(model.lastRequestAt)}</span>
+                          <span>{t.recentRequestPrefix}{formatDate(model.lastRequestAt, lang, t.noRecord)}</span>
                         </div>
                         <div>
-                          <strong>{model.requests} 次</strong>
-                          <span>成功率 {formatPercent(modelSuccessRate)}</span>
+                          <strong>{model.requests} {t.timesSuffix}</strong>
+                          <span>{t.successRatePrefix}{formatPercent(modelSuccessRate)}</span>
                         </div>
                         <div>
                           <strong>{formatBytes(model.totalBytes)}</strong>
@@ -720,15 +737,15 @@ export default function App() {
                   })}
                 </div>
               ) : (
-                <div className="log-empty">当前还没有请求流量，等接口被调用后这里会自动出现统计。</div>
+                <div className="log-empty">{t.trafficEmpty}</div>
               )}
             </div>
 
             <div className="panel-foot">
-              <span className="subtle">清除后不可恢复，仅影响本应用记录的本地数据。</span>
+              <span className="subtle">{t.clearHistoryDisclaimer}</span>
               <button className="soft-button" disabled={isBusy} onClick={() => void handleClearHistory()} type="button">
                 <Trash2 size={16} />
-                清除历史数据
+                {t.clearHistory}
               </button>
             </div>
           </article>
@@ -737,20 +754,20 @@ export default function App() {
             <div className="panel-head">
               <div className="panel-title">
                 <Cookie size={18} />
-                <h2>Cookie</h2>
+                <h2>{t.cookiesPanelTitle}</h2>
               </div>
               <span className="status-pill">{cookieLabel}</span>
             </div>
 
             <div className="cookie-note">
-              <span>最早过期：{formatDate(status?.cookieInspection.expiresAt ?? null)}</span>
-              <span>保存后会自动重新检查。</span>
+              <span>{t.earliestExpiryPrefix}{formatDate(status?.cookieInspection.expiresAt ?? null, lang, t.noRecord)}</span>
+              <span>{t.recheckNote}</span>
             </div>
 
             <details className="cookie-details">
-              <summary className="field-label cookie-toggle">展开编辑 Cookie</summary>
+              <summary className="field-label cookie-toggle">{t.editCookiesToggle}</summary>
               <label className="field-label" htmlFor="cookie-input">
-                粘贴浏览器导出的 Cookie JSON
+                {t.pasteCookieJsonLabel}
               </label>
               <textarea
                 className="editor"
@@ -759,47 +776,47 @@ export default function App() {
                   setCookieText(event.target.value)
                   setCookieDirty(true)
                 }}
-                placeholder='例如：[{"name":"__Secure-1PSID","value":"xxx"}]'
+                placeholder={t.cookiePlaceholder}
                 spellCheck={false}
                 value={cookieText}
               />
 
-            <div className="panel-foot">
-              <span className="subtle">关键项主要是 `__Secure-1PSID` 和 `__Secure-1PSIDTS`。</span>
-              <button className="primary-button" disabled={isBusy} onClick={() => void saveCookies()} type="button">
-                <Save size={16} />
-                保存 Cookie
-              </button>
-            </div>
+              <div className="panel-foot">
+                <span className="subtle">{t.criticalCookieHelp}</span>
+                <button className="primary-button" disabled={isBusy} onClick={() => void saveCookies()} type="button">
+                  <Save size={16} />
+                  {t.saveCookies}
+                </button>
+              </div>
             </details>
           </article>
 
           <details className="panel advanced-panel">
             <summary>
-              <span>高级设置</span>
-              <span className="subtle">代理和来源会话</span>
+              <span>{t.advancedSettings}</span>
+              <span className="subtle">{t.proxyAndAnchor}</span>
             </summary>
 
             <div className="advanced-content">
               <div className="field-group">
                 <div className="panel-title">
                   <Network size={18} />
-                  <h3>代理</h3>
+                  <h3>{t.proxyTitle}</h3>
                 </div>
-                <p className="field-help">留空就是直连。常见格式：`http://127.0.0.1:7890`</p>
+                <p className="field-help">{t.proxyHelp}</p>
                 <input
                   className="text-input"
                   onChange={(event) => {
                     setProxyInput(event.target.value)
                     setProxyDirty(true)
                   }}
-                  placeholder="代理地址"
+                  placeholder={t.proxyPlaceholder}
                   value={proxyInput}
                 />
                 <div className="inline-meta">
-                  <span>当前路由：{status?.effectiveProxy ?? '直连'}</span>
+                  <span>{t.currentRoutePrefix}{status?.effectiveProxy ?? t.direct}</span>
                   <button className="soft-button" disabled={isBusy} onClick={() => void saveProxy()} type="button">
-                    保存代理
+                    {t.saveProxy}
                   </button>
                 </div>
               </div>
@@ -807,25 +824,25 @@ export default function App() {
               <div className="field-group">
                 <div className="panel-title">
                   <Link2 size={18} />
-                  <h3>来源会话</h3>
+                  <h3>{t.anchorTitle}</h3>
                 </div>
-                <p className="field-help">可选。只有在你明确知道用途时再填写。</p>
+                <p className="field-help">{t.anchorHelp}</p>
                 <input
                   className="text-input"
                   onChange={(event) => {
                     setAnchorInput(event.target.value)
                     setAnchorDirty(true)
                   }}
-                  placeholder="https://gemini.google.com/app/..."
+                  placeholder={t.anchorPlaceholder}
                   value={anchorInput}
                 />
                 <div className="inline-meta">
-                  <span>{status?.anchor.sourcePath ?? '当前未启用'}</span>
+                  <span>{status?.anchor.sourcePath ?? t.anchorNotEnabled}</span>
                   <button className="soft-button" disabled={isBusy} onClick={() => void saveAnchor()} type="button">
-                    保存来源会话
+                    {t.saveAnchor}
                   </button>
                 </div>
-                {status?.anchor.error ? <div className="error-box">来源会话链接无效：{status.anchor.error}</div> : null}
+                {status?.anchor.error ? <div className="error-box">{t.invalidAnchorPrefix}{status.anchor.error}</div> : null}
               </div>
             </div>
           </details>
@@ -834,17 +851,17 @@ export default function App() {
             <div className="panel-head">
               <div className="panel-title">
                 <TerminalSquare size={18} />
-                <h2>运行日志</h2>
+                <h2>{t.liveLogs}</h2>
               </div>
-              <span className="subtle">{logs.length} 条</span>
+              <span className="subtle">{t.logEntriesCount(logs.length)}</span>
             </div>
 
             <div aria-live="polite" aria-relevant="additions text" className="log-console" role="log">
-              {logs.length === 0 ? <div className="log-empty">暂无日志输出</div> : null}
+              {logs.length === 0 ? <div className="log-empty">{t.noLogsYet}</div> : null}
               {logs.map((entry) => (
                 <div className="log-line" key={entry.id}>
-                  <span className="log-time">{formatDate(entry.timestamp)}</span>
-                  <span className="log-level">{logLevelLabel(entry.level)}</span>
+                  <span className="log-time">{formatDate(entry.timestamp, lang, t.noRecord)}</span>
+                  <span className="log-level">{logLevelLabel(entry.level, t)}</span>
                   <span className="log-message">{entry.message}</span>
                 </div>
               ))}

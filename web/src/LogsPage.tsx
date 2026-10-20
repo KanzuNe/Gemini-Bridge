@@ -17,6 +17,8 @@ import {
 } from 'lucide-react'
 import './LogsPage.css'
 import { copyText } from './clipboard'
+import { useI18n, LanguageToggle, type Language } from './i18n'
+import type { TranslationDictionary } from './i18n/en'
 
 type ConversationStatus = 'success' | 'error'
 type ConversationOutcome = 'answer' | 'refusal' | 'circuit_open' | 'error'
@@ -61,7 +63,7 @@ type Banner = {
 type FilterStatus = 'all' | ConversationStatus
 type FilterOutcome = 'all' | ConversationOutcome
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(url: string, init?: RequestInit, t?: TranslationDictionary): Promise<T> {
   const response = await fetch(url, {
     headers: {
       'Content-Type': 'application/json',
@@ -72,17 +74,17 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { error?: { message?: string } }
-    throw new Error(data.error?.message ?? `请求失败：${response.status}`)
+    throw new Error(data.error?.message ?? `${t?.requestFailed ?? 'Request failed: '}${response.status}`)
   }
 
   return (await response.json()) as T
 }
 
-async function downloadExport(url: string, filenameFallback: string) {
+async function downloadExport(url: string, filenameFallback: string, t?: TranslationDictionary) {
   const response = await fetch(url)
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { error?: { message?: string } }
-    throw new Error(data.error?.message ?? `导出失败：${response.status}`)
+    throw new Error(data.error?.message ?? `${t?.exportFailed ?? 'Export failed: '}${response.status}`)
   }
 
   const disposition = response.headers.get('content-disposition') ?? ''
@@ -99,8 +101,8 @@ async function downloadExport(url: string, filenameFallback: string) {
   URL.revokeObjectURL(objectUrl)
 }
 
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat('zh-CN', {
+function formatDate(value: string, lang: Language): string {
+  return new Intl.DateTimeFormat(lang === 'zh' ? 'zh-CN' : 'en-US', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -111,35 +113,35 @@ function formatDate(value: string): string {
   }).format(new Date(value))
 }
 
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms} 毫秒`
+function formatDuration(ms: number, t: TranslationDictionary): string {
+  if (ms < 1000) return `${ms} ms`
   const seconds = Math.floor(ms / 1000)
-  if (seconds < 60) return `${seconds}.${String(Math.floor((ms % 1000) / 10)).padStart(2, '0')} 秒`
+  if (seconds < 60) return `${seconds}.${String(Math.floor((ms % 1000) / 10)).padStart(2, '0')} ${t.sec}`
   const minutes = Math.floor(seconds / 60)
-  return `${minutes} 分 ${seconds % 60} 秒`
+  return `${minutes} ${t.min} ${seconds % 60} ${t.sec}`
 }
 
-function timeAgo(value: string): string {
+function timeAgo(value: string, t: TranslationDictionary): string {
   const diff = Date.now() - new Date(value).getTime()
-  if (diff < 5000) return '刚刚'
-  if (diff < 60000) return `${Math.floor(diff / 1000)} 秒前`
-  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`
-  return `${Math.floor(diff / 86400000)} 天前`
+  if (diff < 5000) return t.justNow
+  if (diff < 60000) return `${Math.floor(diff / 1000)} ${t.secsAgo}`
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} ${t.minsAgo}`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} ${t.hoursAgo}`
+  return `${Math.floor(diff / 86400000)} ${t.daysAgo}`
 }
 
-function outcomeLabel(outcome: ConversationOutcome): string {
-  if (outcome === 'answer') return '已回答'
-  if (outcome === 'refusal') return '已拒答'
-  if (outcome === 'circuit_open') return '冷却中'
-  return '错误'
+function outcomeLabel(outcome: ConversationOutcome, t: TranslationDictionary): string {
+  if (outcome === 'answer') return t.outcomeAnswered
+  if (outcome === 'refusal') return t.outcomeRefused
+  if (outcome === 'circuit_open') return t.outcomeCircuitOpen
+  return t.outcomeError
 }
 
-function completionStageLabel(stage: CompletionStage): string {
-  if (stage === 'initial') return '首次请求'
-  if (stage === 'text_only_retry') return '纯文本重试'
-  if (stage === 'anchored_chat_retry') return '锚定会话重试'
-  return '无'
+function completionStageLabel(stage: CompletionStage, t: TranslationDictionary): string {
+  if (stage === 'initial') return t.stageInitial
+  if (stage === 'text_only_retry') return t.stageTextOnlyRetry
+  if (stage === 'anchored_chat_retry') return t.stageAnchoredRetry
+  return t.stageNone
 }
 
 function buildConversationUrl(params: {
@@ -171,6 +173,8 @@ function buildConversationUrl(params: {
 }
 
 export default function LogsPage() {
+  const { t, lang } = useI18n()
+
   const [conversations, setConversations] = useState<ConversationLog[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -206,20 +210,21 @@ export default function LogsPage() {
 
   const loadConversations = useCallback(async () => {
     try {
-      const data = await requestJson<ConversationLog[]>(queryUrl)
+      const data = await requestJson<ConversationLog[]>(queryUrl, undefined, t)
       setConversations(data)
       setBanner(null)
     } catch (error) {
       setBanner({
         tone: 'error',
-        text: error instanceof Error ? error.message : '加载会话记录失败',
+        text: error instanceof Error ? error.message : t.loadConversationsFailed,
       })
     } finally {
       setLoading(false)
     }
-  }, [queryUrl])
+  }, [queryUrl, t])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true)
     void loadConversations()
   }, [loadConversations])
@@ -275,12 +280,12 @@ export default function LogsPage() {
     try {
       const copied = await copyText(text)
       if (!copied) {
-        throw new Error('复制失败')
+        throw new Error(t.copyFailed)
       }
       setCopiedId(id)
       window.setTimeout(() => setCopiedId(null), 1800)
     } catch {
-      setBanner({ tone: 'info', text: '复制失败，请手动复制文本。' })
+      setBanner({ tone: 'info', text: t.copyFailed })
     }
   }
 
@@ -292,14 +297,14 @@ export default function LogsPage() {
 
       setDetailLoadingId(id)
       try {
-        const detail = await requestJson<ConversationLog>(`/admin/conversations/${id}`)
+        const detail = await requestJson<ConversationLog>(`/admin/conversations/${id}`, undefined, t)
         setDetailCache((current) => ({ ...current, [id]: detail }))
         return detail
       } finally {
         setDetailLoadingId((current) => (current === id ? null : current))
       }
     },
-    [detailCache],
+    [detailCache, t],
   )
 
   const handleExpand = async (id: string) => {
@@ -314,7 +319,7 @@ export default function LogsPage() {
     } catch (error) {
       setBanner({
         tone: 'error',
-        text: error instanceof Error ? error.message : '加载详情失败',
+        text: error instanceof Error ? error.message : t.loadDetailFailed,
       })
     }
   }
@@ -347,18 +352,20 @@ export default function LogsPage() {
 
     setExportingKey(preset)
     try {
-      await downloadExport(
-        `/admin/conversations/export?${search.toString()}`,
-        preset === 'recent_failures' ? '近期失败记录.jsonl' : '会话记录.jsonl',
-      )
+      const fallbackName =
+        preset === 'recent_failures'
+          ? (lang === 'zh' ? '近期失败记录.jsonl' : 'failure-logs.jsonl')
+          : (lang === 'zh' ? '会话记录.jsonl' : 'conversation-logs.jsonl')
+
+      await downloadExport(`/admin/conversations/export?${search.toString()}`, fallbackName, t)
       setBanner({
         tone: 'info',
-        text: preset === 'recent_failures' ? '近期失败记录已导出。' : '当前结果已导出。',
+        text: preset === 'recent_failures' ? t.failuresExported : t.currentExported,
       })
     } catch (error) {
       setBanner({
         tone: 'error',
-        text: error instanceof Error ? error.message : '导出会话记录失败',
+        text: error instanceof Error ? error.message : t.exportFailed,
       })
     } finally {
       setExportingKey(null)
@@ -368,7 +375,7 @@ export default function LogsPage() {
   return (
     <>
       <a className="skip-link" href="#main-content">
-        跳到主要内容
+        {t.skipToMain}
       </a>
 
       <main className="page-shell logs-shell" id="main-content">
@@ -376,16 +383,18 @@ export default function LogsPage() {
           <div className="header-copy">
             <Link className="back-link" to="/">
               <ArrowLeft size={16} />
-              返回 Gemini Bridge
+              {t.backToBridge}
             </Link>
-            <h1>会话记录</h1>
-            <p>先筛选，再展开需要查看的记录。这样更容易找到你真正关心的内容。</p>
+            <h1>{t.logsPageTitle}</h1>
+            <p>{t.logsPageSubtitle}</p>
           </div>
 
           <div className="header-actions">
+            <LanguageToggle />
+
             <button className="soft-button" onClick={() => void loadConversations()} type="button">
               <RefreshCw size={16} />
-              刷新
+              {t.refresh}
             </button>
 
             <button
@@ -395,7 +404,7 @@ export default function LogsPage() {
               type="button"
             >
               {exportingKey === 'current' ? <Loader2 className="spin" size={14} /> : <ArrowDownToLine size={14} />}
-              导出当前结果
+              {t.exportCurrentResult}
             </button>
           </div>
         </header>
@@ -413,65 +422,65 @@ export default function LogsPage() {
         <section className="filters-panel">
           <div className="search-box">
             <label className="sr-only" htmlFor="conversation-search">
-              搜索会话记录
+              {t.searchAriaLabel}
             </label>
             <Search size={15} />
             <input
               id="conversation-search"
               onChange={(event) => setSearchText(event.target.value)}
-              placeholder="搜索提问、回答、模型或记录 ID"
+              placeholder={t.searchPlaceholder}
               spellCheck={false}
               type="text"
               value={searchText}
             />
           </div>
 
-          <div aria-label="状态筛选" className="filter-pills" role="group">
+          <div aria-label={t.statusFilterAria} className="filter-pills" role="group">
             <button className={`pill ${filterStatus === 'all' ? 'active' : ''}`} onClick={() => setFilterStatus('all')} type="button">
-              全部
+              {t.all}
             </button>
             <button
               className={`pill ${filterStatus === 'success' ? 'active' : ''}`}
               onClick={() => setFilterStatus('success')}
               type="button"
             >
-              成功
+              {t.statusSuccess}
             </button>
             <button className={`pill ${filterStatus === 'error' ? 'active' : ''}`} onClick={() => setFilterStatus('error')} type="button">
-              错误
+              {t.statusError}
             </button>
           </div>
 
           <div className="filter-inline">
             <label className="filter-select">
-              <span>结果类型</span>
+              <span>{t.outcomeType}</span>
               <select value={filterOutcome} onChange={(event) => setFilterOutcome(event.target.value as FilterOutcome)}>
-                <option value="all">全部</option>
-                <option value="answer">已回答</option>
-                <option value="refusal">已拒答</option>
-                <option value="circuit_open">冷却中</option>
-                <option value="error">错误</option>
+                <option value="all">{t.all}</option>
+                <option value="answer">{t.outcomeAnswered}</option>
+                <option value="refusal">{t.outcomeRefused}</option>
+                <option value="circuit_open">{t.outcomeCircuitOpen}</option>
+                <option value="error">{t.outcomeError}</option>
               </select>
             </label>
 
             <label className="filter-date">
-              <span>开始日期</span>
+              <span>{t.startDate}</span>
               <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
             </label>
 
             <label className="filter-date">
-              <span>结束日期</span>
+              <span>{t.endDate}</span>
               <input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
             </label>
 
             <label className="toggle-auto">
               <input checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} type="checkbox" />
-              自动刷新
+              {t.autoRefresh}
             </label>
           </div>
 
           <details className="more-actions">
-            <summary>更多操作</summary>
+            <summary>{t.moreActions}</summary>
             <button
               className="soft-button"
               disabled={exportingKey !== null}
@@ -479,7 +488,7 @@ export default function LogsPage() {
               type="button"
             >
               {exportingKey === 'recent_failures' ? <Loader2 className="spin" size={14} /> : <TriangleAlert size={14} />}
-              导出失败记录
+              {t.exportRecentFailures}
             </button>
           </details>
         </section>
@@ -488,13 +497,13 @@ export default function LogsPage() {
           {loading && conversations.length === 0 ? (
             <div className="empty-state">
               <Loader2 className="spin" size={36} />
-              <p>正在加载会话记录...</p>
+              <p>{t.loadingLogs}</p>
             </div>
           ) : conversations.length === 0 ? (
             <div className="empty-state">
               <FileText size={40} strokeWidth={1.3} />
-              <p>没有匹配的记录</p>
-              <p className="subtle">可以先清空筛选条件，再重新查看。</p>
+              <p>{t.noMatchingLogs}</p>
+              <p className="subtle">{t.clearFiltersAdvice}</p>
             </div>
           ) : (
             conversations.map((conversation) => {
@@ -522,18 +531,20 @@ export default function LogsPage() {
                       <div className="conv-meta">
                         <code className="conv-model">{conversation.model}</code>
                         <span className={`badge ${conversation.stream ? 'stream' : 'sync'}`}>
-                          {conversation.stream ? '流式' : '同步'}
+                          {conversation.stream ? t.streamingTag : t.syncTag}
                         </span>
-                        <span className={`badge outcome ${conversation.outcome}`}>{outcomeLabel(conversation.outcome)}</span>
-                        <span className="conv-time" title={formatDate(conversation.timestamp)}>
-                          {timeAgo(conversation.timestamp)}
+                        <span className={`badge outcome ${conversation.outcome}`}>
+                          {outcomeLabel(conversation.outcome, t)}
+                        </span>
+                        <span className="conv-time" title={formatDate(conversation.timestamp, lang)}>
+                          {timeAgo(conversation.timestamp, t)}
                         </span>
                       </div>
                       <p className="conv-preview">{conversation.promptPreview}</p>
                     </div>
 
                     <div className="conv-side">
-                      <span className="duration">{formatDuration(conversation.durationMs)}</span>
+                      <span className="duration">{formatDuration(conversation.durationMs, t)}</span>
                       {isExpanded ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
                     </div>
                   </button>
@@ -543,21 +554,21 @@ export default function LogsPage() {
                       {isDetailLoading ? (
                         <div className="detail-loading">
                           <Loader2 className="spin" size={16} />
-                          正在加载完整内容...
+                          {t.loadingFullContent}
                         </div>
                       ) : null}
 
                       {conversation.status === 'error' && conversation.errorMessage ? (
                         <div className="error-box">
-                          错误信息：{conversation.errorMessage}
-                          {conversation.statusCode ? `（HTTP ${conversation.statusCode}）` : ''}
+                          {t.errorPrefix}{conversation.errorMessage}
+                          {conversation.statusCode ? ` (HTTP ${conversation.statusCode})` : ''}
                         </div>
                       ) : null}
 
                       {requestPayload ? (
                         <div className="detail-section">
                           <div className="detail-head">
-                            <h3>原始请求</h3>
+                            <h3>{t.rawRequestPayload}</h3>
                             <button
                               className={`copy-btn ${copiedId === `req-${conversation.id}` ? 'copied' : ''}`}
                               onClick={() => void handleCopy(requestPayload, `req-${conversation.id}`)}
@@ -572,7 +583,7 @@ export default function LogsPage() {
 
                       <div className="detail-section">
                         <div className="detail-head">
-                          <h3>提示词</h3>
+                          <h3>{t.promptTitle}</h3>
                           <button
                             className={`copy-btn ${copiedId === `prompt-${conversation.id}` ? 'copied' : ''}`}
                             onClick={() => void handleCopy(promptText, `prompt-${conversation.id}`)}
@@ -587,7 +598,7 @@ export default function LogsPage() {
                       {responseText ? (
                         <div className="detail-section">
                           <div className="detail-head">
-                            <h3>响应</h3>
+                            <h3>{t.responseTitle}</h3>
                             <button
                               className={`copy-btn ${copiedId === `resp-${conversation.id}` ? 'copied' : ''}`}
                               onClick={() => void handleCopy(responseText, `resp-${conversation.id}`)}
@@ -601,31 +612,31 @@ export default function LogsPage() {
                       ) : null}
 
                       <details className="more-meta">
-                        <summary>更多信息</summary>
+                        <summary>{t.moreMetadata}</summary>
                         <div className="meta-grid">
                           <div>
-                            <span>记录 ID</span>
+                            <span>{t.recordId}</span>
                             <strong>{conversation.id}</strong>
                           </div>
                           <div>
-                            <span>时间</span>
-                            <strong>{formatDate(conversation.timestamp)}</strong>
+                            <span>{t.timestamp}</span>
+                            <strong>{formatDate(conversation.timestamp, lang)}</strong>
                           </div>
                           <div>
-                            <span>结果</span>
-                            <strong>{outcomeLabel(conversation.outcome)}</strong>
+                            <span>{t.outcomeLabel}</span>
+                            <strong>{outcomeLabel(conversation.outcome, t)}</strong>
                           </div>
                           <div>
-                            <span>模式</span>
-                            <strong>{conversation.stream ? '流式返回' : '同步返回'}</strong>
+                            <span>{t.modeLabel}</span>
+                            <strong>{conversation.stream ? t.streamingReturn : t.syncReturn}</strong>
                           </div>
                           <div>
-                            <span>阶段</span>
-                            <strong>{completionStageLabel(conversation.completionStage)}</strong>
+                            <span>{t.stageLabel}</span>
+                            <strong>{completionStageLabel(conversation.completionStage, t)}</strong>
                           </div>
                           <div>
-                            <span>状态码</span>
-                            <strong>{conversation.statusCode ?? '正常'}</strong>
+                            <span>{t.statusCodeLabel}</span>
+                            <strong>{conversation.statusCode ?? t.statusHealthy}</strong>
                           </div>
                         </div>
                       </details>
