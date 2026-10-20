@@ -56,8 +56,13 @@ export class GeminiWebClient {
   }
 
   private extractField(html: string, fieldName: string): string | null {
-    const regex = new RegExp(`\"${fieldName}\":\\s*\"(.*?)\"`);
-    return html.match(regex)?.[1] ?? null;
+    const standardRegex = new RegExp(`["']${fieldName}["']\\s*:\\s*["']([^"']+)["']`);
+    const match = html.match(standardRegex);
+    if (match?.[1]) {
+      return match[1];
+    }
+    const arrayRegex = new RegExp(`["']${fieldName}["'],\\s*(?:\\[[^\\]]*\\]|null|"[^"]*"),\\s*["']([^"']+)["']`);
+    return html.match(arrayRegex)?.[1] ?? null;
   }
 
   private applySessionFields(html: string): void {
@@ -84,7 +89,19 @@ export class GeminiWebClient {
     this.applySessionFields(html);
 
     if (!this.accessToken && !initPath) {
-      throw new AuthError("Could not extract SNlM0e from the Gemini page. This usually means the cookies are invalid or the request was blocked.");
+      const pageTitle = html.match(/<title>(.*?)<\/title>/i)?.[1]?.trim() || "No title";
+      const isLoginRedirect = /accounts\.google\.com|ServiceLogin/i.test(html);
+      const isConsentPage = /consent\.google\.com/i.test(html);
+      let hint = "";
+      if (isLoginRedirect) {
+        hint = "Google redirected to login page. Cookies are expired or missing full session cookies (SID, HSID, SSID, etc.).";
+      } else if (isConsentPage) {
+        hint = "Google returned a consent page. A proxy or browser session consent is needed.";
+      }
+      this.log("warn", `Gemini init page: "${pageTitle}". ${hint}`.trim());
+      throw new AuthError(
+        `Could not extract SNlM0e from the Gemini page (Page title: "${pageTitle}"). ${hint || "This usually means the cookies are invalid, expired, or the request was blocked."}`.trim(),
+      );
     }
 
     if (!this.accessToken && initPath) {

@@ -646,7 +646,63 @@ process.on("uncaughtException", (error) => {
 await manager.bootstrap();
 
 const app = express();
-app.use(cors());
+const ALLOWED_ORIGIN_PATTERNS = [
+  /^http:\/\/127\.0\.0\.1(:\d+)?$/,
+  /^http:\/\/localhost(:\d+)?$/,
+  /^app:\/\/./,
+  /^vscode-webview:\/\/./,
+];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) {
+        return callback(null, true);
+      }
+      const isAllowed = ALLOWED_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin));
+      if (isAllowed) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS blocked for untrusted origin: ${origin}`));
+    },
+    credentials: true,
+  }),
+);
+
+// DNS Rebinding / Host header check for sensitive admin routes
+app.use("/admin", (req, res, next) => {
+  const host = (req.headers.host ?? "").split(":")[0]?.toLowerCase();
+  if (host && host !== "localhost" && host !== "127.0.0.1") {
+    return res.status(403).json({ error: "Access to /admin is restricted to localhost" });
+  }
+  next();
+});
+
+// API Key enforcement for /v1 endpoints when configured
+app.use("/v1", (req, res, next) => {
+  const configuredKey = manager.getConfig().apiKey;
+  if (!configuredKey) {
+    return next();
+  }
+
+  const authHeader = req.headers.authorization ?? "";
+  const token = authHeader.startsWith("Bearer ")
+    ? authHeader.slice(7).trim()
+    : String(req.headers["x-api-key"] ?? "").trim();
+
+  if (token !== configuredKey) {
+    return res.status(401).json({
+      error: {
+        message: "Incorrect or missing API key provided.",
+        type: "invalid_request_error",
+        param: null,
+        code: "invalid_api_key",
+      },
+    });
+  }
+
+  next();
+});
 app.use(express.json({ limit: "10mb" }));
 
 app.get("/health", (_req, res) => {

@@ -18,6 +18,7 @@ export interface RuntimeConfig {
   defaultModel: string;
   proxy: string | null;
   anchorUrl: string | null;
+  apiKey?: string | null;
   cookieFilePath: string;
   cookieCheckIntervalMs: number;
   historyDbPath: string;

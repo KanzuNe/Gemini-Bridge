@@ -11,6 +11,9 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 *.local
+.env
+.env.*
+.env.local
 
 cookies.json
 diagnose-result.json
