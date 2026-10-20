@@ -43,7 +43,7 @@ const manager = new ServiceManager();
 const IMAGE_MODE_REFUSAL_RE =
   /is there another image i can try|can't make images like that|policy-guidelines|ideas to life, but that one may go against/i;
 const GENERIC_CAPABILITY_REFUSAL_RE =
-  /我是一个文本\s*ai|我只是一个语言模型|身为一个语言模型|我的设计用途只是处理和生成文本|由于程序代码的局限|恐怕我帮不上忙|没法在这方面帮到你|无法为你提供这方面的帮助|无法提供这方面的帮助|没法提供这方面的帮助|不能理解或回复你的这个问题|这超出了我的能力范围|this is beyond my capabilities|i(?:'m| am) (?:just )?(?:a text ai|a language model)|can't help with that/i;
+  /我是一个文本\s*ai|我只是一个语言模型|身为一个语言模型|我的设计用途只是处理和生成文本|由于程序代码的局限|恐怕我帮不上忙|没法在这方面帮到你|无法为你提供这方面的帮助|无法提供这方面的帮助|没法提供这方面的帮助|不能理解或回复你的这个问题|这超出了我的能力范围|this is beyond my capabilities|i(?:'m| am) (?:just )?(?:a text ai|a language model)|can't help with that|tôi chỉ là một mô hình ngôn ngữ|tôi không thể giúp bạn việc đó|vượt quá khả năng của tôi|tôi không thể thực hiện yêu cầu này|không thể hỗ trợ bạn|tôi là một mô hình ai/i;
 const TEXT_ONLY_RETRY_PREFIX = [
   "Important runtime override:",
   "This request is strictly for text output.",
